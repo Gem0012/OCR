@@ -8,11 +8,13 @@ export const LEGACY_PROMPT =
   "Use null for missing values. Preserve all other visible text in details. " +
   "Do not use markdown or commentary.";
 
-/** Quotes bare ISO dates (e.g. "date":2026-09-30), a slip small models make
- *  that breaks JSON parsing. Applied only as a repair attempt after a plain
- *  parse fails. */
+/** Quotes bare ISO dates ("date":2026-09-30) and strips thousands separators
+ *  from bare numbers ("total": 3,420.75) — slips small models make that break
+ *  JSON parsing. Applied only as a repair attempt after a plain parse fails. */
 function repairCommonSlips(candidate: string): string {
-  return candidate.replace(/(:\s*)((?:\d{4})-(?:\d{2})-(?:\d{2}))(?=\s*[,}\]])/g, '$1"$2"');
+  return candidate
+    .replace(/(:\s*)((?:\d{4})-(?:\d{2})-(?:\d{2}))(?=\s*[,}\]])/g, '$1"$2"')
+    .replace(/(:\s*)(\d{1,3}(?:,\d{3})+(?:\.\d+)?)(?=\s*[,}\]])/g, (_match, colon: string, num: string) => `${colon}${num.replace(/,/g, "")}`);
 }
 
 /** Parses the model's reply into JSON (object or array), stripping a markdown

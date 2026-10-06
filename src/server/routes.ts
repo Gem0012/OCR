@@ -4,8 +4,9 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { Database } from "better-sqlite3";
 import type { AppConfig } from "./config.js";
-import { createUpload, imageDataUrls, type UploadRequest } from "./files.js";
-import { runModelPages } from "./llm.js";
+import { createUpload, type UploadRequest } from "./files.js";
+import { runModelPages, runTextPages } from "./llm.js";
+import { convertUpload } from "./pipeline.js";
 import { LEGACY_PROMPT, buildExtractionPrompt } from "./prompt.js";
 import { extractData } from "./extract.js";
 import {
@@ -18,9 +19,9 @@ import {
   upsertProfile,
   validateProfileInput,
 } from "./profiles.js";
-import { getExtraction, listExtractions, saveExtraction, saveLegacyRecord } from "./storage.js";
+import { getExtraction, listExtractions, saveExtraction, saveLegacyRecord, updateExtractionData, type ExtractionRow } from "./storage.js";
 import { type SupabaseStore } from "./supabase.js";
-import type { Profile } from "./types.js";
+import type { FieldDef, Profile } from "./types.js";
 
 type Body = Record<string, string | undefined>;
 
@@ -46,7 +47,25 @@ export function buildApp(config: AppConfig, db: Database, supabase: SupabaseStor
       prompt: devconsole ? effectivePrompt(devconsole) : LEGACY_PROMPT,
       max_pdf_pages: config.maxPdfPages,
       max_upload_mb: config.maxUploadMb,
+      supabase_configured: Boolean(config.supabaseDbUrl),
     });
+  });
+
+  // Live preview of the prompt a profile would send, without saving it.
+  app.post("/api/prompt-preview", (request, response) => {
+    const body = request.body as { fields?: unknown; prompt?: unknown };
+    const manualPrompt = typeof body.prompt === "string" && body.prompt.trim() ? body.prompt.trim() : null;
+    const fields: FieldDef[] = Array.isArray(body.fields)
+      ? body.fields.flatMap((entry) => {
+          const record = (entry ?? {}) as Record<string, unknown>;
+          const key = typeof record.key === "string" ? record.key.trim() : "";
+          if (!key) return [];
+          const description = typeof record.description === "string" && record.description.trim() ? record.description.trim() : undefined;
+          const type = record.type === "number" || record.type === "boolean" ? record.type : undefined;
+          return [{ key, description, type } as FieldDef];
+        })
+      : [];
+    response.json({ effective_prompt: manualPrompt || buildExtractionPrompt(fields) });
   });
 
   app.get("/api/models", async (request, response) => {
@@ -104,52 +123,80 @@ export function buildApp(config: AppConfig, db: Database, supabase: SupabaseStor
     response.json({ ok: true });
   });
 
-  app.get("/api/extractions", (request, response) => {
-    const limit = Math.min(Math.max(Number(request.query.limit) || 50, 1), 200);
-    const appId = typeof request.query.app_id === "string" && request.query.app_id ? request.query.app_id : null;
-    const referenceId = typeof request.query.reference_id === "string" && request.query.reference_id ? request.query.reference_id : null;
-    response.json({
-      extractions: listExtractions(db, appId, referenceId, limit).map((row) => {
-        let data: unknown = null;
-        try {
-          data = JSON.parse(row.data_json);
-        } catch {
-          data = null;
-        }
-        return {
-          id: row.id,
-          app_id: row.app_id,
-          reference_id: row.reference_id,
-          source_file: row.source_file,
-          data,
-          created_at: row.created_at,
-        };
-      }),
-    });
-  });
-
-  app.get("/api/extractions/:id", (request, response) => {
-    const id = Number(request.params.id);
-    if (!Number.isInteger(id) || id < 1) return response.status(400).json({ error: "Extraction id must be a positive number." });
-    const row = getExtraction(db, id);
-    if (!row) return response.status(404).json({ error: `Extraction #${id} does not exist.` });
+  const toExtractionJson = (row: ExtractionRow) => {
     let data: unknown = null;
     try {
       data = JSON.parse(row.data_json);
     } catch {
       data = null;
     }
-    response.json({
-      extraction: {
-        id: row.id,
-        app_id: row.app_id,
-        reference_id: row.reference_id,
-        source_file: row.source_file,
-        extracted_text: row.extracted_text,
-        data,
-        created_at: row.created_at,
-      },
-    });
+    return {
+      id: row.id,
+      app_id: row.app_id,
+      reference_id: row.reference_id,
+      source_file: row.source_file,
+      data,
+      created_at: row.created_at,
+    };
+  };
+
+  // Resolves the Supabase store for source=supabase requests, answering 502
+  // with a clear error when the service has no Supabase configured.
+  function requireSupabase(response: Response): SupabaseStore | null {
+    if (!supabase) {
+      response.status(502).json({ error: "Supabase is not configured on this service (set SUPABASE_DB_URL)." });
+      return null;
+    }
+    return supabase;
+  }
+
+  app.get("/api/extractions", async (request, response) => {
+    const limit = Math.min(Math.max(Number(request.query.limit) || 50, 1), 200);
+    const appId = typeof request.query.app_id === "string" && request.query.app_id ? request.query.app_id : null;
+    const referenceId = typeof request.query.reference_id === "string" && request.query.reference_id ? request.query.reference_id : null;
+    const source = request.query.source === "supabase" ? "supabase" : "local";
+    try {
+      const rows = source === "supabase"
+        ? await requireSupabase(response)?.listExtractions(appId, referenceId, limit)
+        : listExtractions(db, appId, referenceId, limit);
+      if (!rows) return;
+      response.json({ extractions: rows.map(toExtractionJson) });
+    } catch (error) {
+      response.status(502).json({ error: error instanceof Error ? error.message : "Could not read extractions." });
+    }
+  });
+
+  app.get("/api/extractions/:id", async (request, response) => {
+    const id = Number(request.params.id);
+    if (!Number.isInteger(id) || id < 1) return response.status(400).json({ error: "Extraction id must be a positive number." });
+    const source = request.query.source === "supabase" ? "supabase" : "local";
+    try {
+      const row = source === "supabase" ? (await requireSupabase(response)?.getExtraction(id)) ?? null : getExtraction(db, id);
+      if (!row) return response.status(404).json({ error: `Extraction #${id} does not exist.` });
+      response.json({ extraction: { ...toExtractionJson(row), extracted_text: row.extracted_text } });
+    } catch (error) {
+      response.status(502).json({ error: error instanceof Error ? error.message : "Could not read the extraction." });
+    }
+  });
+
+  // Human corrections from the dashboard review form.
+  app.patch("/api/extractions/:id", async (request, response) => {
+    const id = Number(request.params.id);
+    if (!Number.isInteger(id) || id < 1) return response.status(400).json({ error: "Extraction id must be a positive number." });
+    const body = request.body as { data?: unknown; source?: string };
+    if (body.data == null || (typeof body.data !== "object" && !Array.isArray(body.data))) {
+      return response.status(400).json({ error: "Provide the corrected data as a JSON object or array." });
+    }
+    const source = body.source === "supabase" ? "supabase" : "local";
+    try {
+      const updated = source === "supabase"
+        ? (await requireSupabase(response)) && (await supabase!.updateExtractionData(id, body.data))
+        : updateExtractionData(db, id, body.data);
+      if (!updated) return response.status(404).json({ error: `Extraction #${id} does not exist.` });
+      response.json({ ok: true });
+    } catch (error) {
+      response.status(502).json({ error: error instanceof Error ? error.message : "Could not update the extraction." });
+    }
   });
 
   app.post("/api/extract", upload.single("file"), async (request: UploadRequest, response) => {
@@ -183,21 +230,53 @@ export function buildApp(config: AppConfig, db: Database, supabase: SupabaseStor
     const model = body.model || profile.model || config.defaultModel;
     const target = (body.base_url || profile.base_url || config.baseUrl).replace(/\/$/, "");
     const temperature = body.temperature ? Number(body.temperature) : profile.temperature;
+    const chatCore = { target, model, temperature, maxTokens: config.maxTokens, timeoutMs: config.requestTimeoutMs, apiKey: config.llmApiKey };
     try {
-      const urls = await imageDataUrls(file.buffer, file.originalname, file.mimetype, config.maxPdfPages);
-      const run = await runModelPages({ target, model, temperature, maxTokens: config.maxTokens, timeoutMs: config.requestTimeoutMs, prompt, urls });
+      const converted = await convertUpload(file.buffer, file.originalname, file.mimetype, config.maxPdfPages);
+      const run = converted.pipeline === "vision"
+        ? await runModelPages({ ...chatCore, prompt, urls: converted.urls })
+        : await runTextPages({ ...chatCore, prompt, pages: converted.pages });
+      const pagesCount = converted.pipeline === "vision" ? converted.urls.length : converted.pages.length;
       const text = joinPages(run.pages);
       const { data } = extractData(run.pages, profile.fields.length ? profile.fields : null);
-      const recordId = profile.storage === "local" || profile.id === DEVCONSOLE_ID
-        ? saveExtraction(db, profile.id, file.originalname, text, data, text, body.reference_id || null)
-        : null;
+      const referenceId = body.reference_id || null;
+      const ownerId = body.owner_id || null;
+      let recordId: number | null = null;
+      let storedIn: "local" | "supabase" | undefined;
+      let warning: string | undefined;
+      if (profile.storage === "supabase") {
+        if (supabase) {
+          try {
+            recordId = await supabase.saveExtraction({
+              appId: profile.id,
+              referenceId,
+              ownerId,
+              filename: file.originalname,
+              text,
+              data,
+            });
+            storedIn = "supabase";
+          } catch (storeError) {
+            console.error("Supabase write failed:", storeError instanceof Error ? storeError.message : storeError);
+            warning = "The extraction succeeded but writing it to Supabase failed — the result is returned here only.";
+          }
+        } else {
+          warning = 'Profile storage is "supabase" but the service has no SUPABASE_DB_URL configured — the result is returned here only.';
+        }
+      } else if (profile.storage === "local" || profile.id === DEVCONSOLE_ID) {
+        recordId = saveExtraction(db, profile.id, file.originalname, text, data, text, referenceId);
+        storedIn = "local";
+      }
       response.json({
         text,
         data,
         record_id: recordId ?? undefined,
+        stored_in: storedIn,
+        warning,
         profile: profile.id,
         reasoning: run.reasoning,
-        pages: urls.length,
+        pages: pagesCount,
+        pipeline: converted.pipeline,
         usage: { prompt_tokens: run.promptTokens, completion_tokens: run.completionTokens },
       });
     } catch (error) {
@@ -215,8 +294,11 @@ export function buildApp(config: AppConfig, db: Database, supabase: SupabaseStor
     const target = (body.base_url || config.baseUrl).replace(/\/$/, "");
     const temperature = Number(body.temperature || 0);
     try {
-      const urls = await imageDataUrls(file.buffer, file.originalname, file.mimetype, config.maxPdfPages);
-      const run = await runModelPages({ target, model, temperature, maxTokens: config.maxTokens, timeoutMs: config.requestTimeoutMs, prompt, urls });
+      const converted = await convertUpload(file.buffer, file.originalname, file.mimetype, config.maxPdfPages);
+      const run = converted.pipeline === "vision"
+        ? await runModelPages({ target, model, temperature, maxTokens: config.maxTokens, timeoutMs: config.requestTimeoutMs, prompt, urls: converted.urls })
+        : await runTextPages({ target, model, temperature, maxTokens: config.maxTokens, timeoutMs: config.requestTimeoutMs, prompt, pages: converted.pages });
+      const pagesCount = converted.pipeline === "vision" ? converted.urls.length : converted.pages.length;
       const text = joinPages(run.pages);
       const saved = saveLegacyRecord(db, file.originalname, text);
       response.json({
@@ -224,7 +306,8 @@ export function buildApp(config: AppConfig, db: Database, supabase: SupabaseStor
         fields: saved.fields,
         record_id: saved.recordId,
         reasoning: run.reasoning,
-        pages: urls.length,
+        pages: pagesCount,
+        pipeline: converted.pipeline,
         usage: { prompt_tokens: run.promptTokens, completion_tokens: run.completionTokens },
       });
     } catch (error) {

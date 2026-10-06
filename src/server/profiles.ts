@@ -125,8 +125,8 @@ export function deleteProfile(db: Database, id: string): boolean {
 }
 
 /** Strips secrets before a profile leaves the service. */
-export function publicProfile(profile: Profile): Omit<Profile, "api_key"> & { api_key: null } {
-  return { ...profile, api_key: null };
+export function publicProfile(profile: Profile): Omit<Profile, "api_key"> & { api_key: null; has_api_key: boolean } {
+  return { ...profile, api_key: null, has_api_key: Boolean(profile.api_key) };
 }
 
 function devconsoleProfile(): Profile {

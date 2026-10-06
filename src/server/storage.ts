@@ -76,4 +76,9 @@ export function getExtraction(db: Database, id: number): ExtractionRow | null {
   return row ?? null;
 }
 
+export function updateExtractionData(db: Database, id: number, data: unknown): boolean {
+  const result = db.prepare("UPDATE extractions SET data_json = ? WHERE id = ?").run(JSON.stringify(data), id);
+  return result.changes > 0;
+}
+
 export type { ExtractionRecord };
