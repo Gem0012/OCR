@@ -33,9 +33,12 @@ export type ExtractResult = {
   text: string;
   data: unknown;
   record_id?: number;
+  stored_in?: "local" | "supabase";
+  warning?: string;
   profile: string;
   reasoning?: string;
   pages: number;
+  pipeline?: "vision" | "text";
   usage: Usage;
 };
 
@@ -79,13 +82,16 @@ export const api = {
       (r) => r.effective_prompt,
     ),
   extract: (form: FormData) => request<ExtractResult>("/api/extract", { method: "POST", body: form }),
-  extractions: (params: { app_id?: string; reference_id?: string; limit?: number }) => {
+  extractions: (params: { app_id?: string; reference_id?: string; limit?: number; source?: "local" | "supabase" }) => {
     const query = new URLSearchParams();
     if (params.app_id) query.set("app_id", params.app_id);
     if (params.reference_id) query.set("reference_id", params.reference_id);
+    if (params.source === "supabase") query.set("source", "supabase");
     query.set("limit", String(params.limit ?? 50));
     return request<{ extractions: ExtractionRow[] }>(`/api/extractions?${query}`).then((r) => r.extractions);
   },
-  extraction: (id: number) =>
-    request<{ extraction: ExtractionDetail }>(`/api/extractions/${id}`).then((r) => r.extraction),
+  extraction: (id: number, source?: "local" | "supabase") =>
+    request<{ extraction: ExtractionDetail }>(`/api/extractions/${id}${source === "supabase" ? "?source=supabase" : ""}`).then((r) => r.extraction),
+  updateExtraction: (id: number, data: unknown, source?: "local" | "supabase") =>
+    request<{ ok: boolean }>(`/api/extractions/${id}`, jsonInit("PATCH", { data, source })).then((r) => r.ok),
 };

@@ -1,5 +1,6 @@
 import { type CSSProperties, type ChangeEvent, type DragEvent, useEffect, useRef, useState } from "react";
 import { api, type Branding, type ExtractResult, type Profile, type ServiceConfig, type Usage } from "./api";
+import ReviewForm from "./ReviewForm";
 
 type Props = { initialProfileId?: string };
 
@@ -9,7 +10,11 @@ export default function PlaygroundPage({ initialProfileId }: Props) {
   const [serviceConfig, setServiceConfig] = useState<ServiceConfig>(defaultConfig);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [selectedProfile, setSelectedProfile] = useState(initialProfileId ?? "");
+  const [profileDetail, setProfileDetail] = useState<Profile | null>(null);
   const [branding, setBranding] = useState<Branding>(null);
+  const [edited, setEdited] = useState<Record<string, unknown> | null>(null);
+  const [recordCount, setRecordCount] = useState(0);
+  const [savedNote, setSavedNote] = useState("");
   const [baseUrl, setBaseUrl] = useState(defaultConfig.base_url);
   const [model, setModel] = useState(defaultConfig.model);
   const [prompt, setPrompt] = useState(defaultConfig.prompt);
@@ -44,7 +49,10 @@ export default function PlaygroundPage({ initialProfileId }: Props) {
     api
       .profile(selectedProfile)
       .then((profile) => {
+        setProfileDetail(profile);
         setBranding(profile.branding);
+        setEdited(null);
+        setSavedNote("");
         if (profile.base_url) setBaseUrl(profile.base_url);
         if (profile.model) setModel(profile.model);
         setPrompt(profile.prompt ?? profile.effective_prompt ?? "");
@@ -63,6 +71,32 @@ export default function PlaygroundPage({ initialProfileId }: Props) {
   useEffect(() => () => {
     if (previewUrl) URL.revokeObjectURL(previewUrl);
   }, [previewUrl]);
+
+  // Derive the editable review record from a fresh extraction result.
+  useEffect(() => {
+    setSavedNote("");
+    const data = result?.data;
+    if (!data || typeof data !== "object") {
+      setEdited(null);
+      setRecordCount(0);
+      return;
+    }
+    const records = Array.isArray(data) ? data : [data];
+    const first = records[0];
+    setEdited(first && typeof first === "object" ? { ...(first as Record<string, unknown>) } : null);
+    setRecordCount(records.length);
+  }, [result]);
+
+  async function saveCorrections() {
+    if (!result?.record_id || !edited) return;
+    try {
+      await api.updateExtraction(result.record_id, edited, profileDetail?.storage === "supabase" ? "supabase" : undefined);
+      setSavedNote(`Corrections saved to record #${result.record_id}.`);
+      setError("");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not save corrections.");
+    }
+  }
 
   const title = branding?.title || "Playground";
   const shellStyle = branding?.accent ? ({ "--accent": branding.accent } as CSSProperties) : undefined;
@@ -114,7 +148,7 @@ export default function PlaygroundPage({ initialProfileId }: Props) {
       file: file?.name ?? null,
       profile: result.profile,
       extracted_text: result.text,
-      data: result.data,
+      data: edited ?? result.data,
       record_id: result.record_id ?? null,
       reasoning: result.reasoning ?? "",
       pages: result.pages,
@@ -203,6 +237,19 @@ export default function PlaygroundPage({ initialProfileId }: Props) {
             <details className="thinking" open>
               <summary>Structured data{result.profile ? ` (${result.profile})` : ""}</summary>
               <pre>{JSON.stringify(result.data, null, 2)}</pre>
+            </details>
+          )}
+          {edited && profileDetail && profileDetail.fields.length > 0 && (
+            <details className="thinking" open>
+              <summary>
+                Review &amp; correct{recordCount > 1 ? ` — ${recordCount} records found, editing the first` : ""}
+              </summary>
+              <ReviewForm fields={profileDetail.fields} data={edited} onChange={setEdited} />
+              <div className="review-actions">
+                <button className="quiet" onClick={() => navigator.clipboard.writeText(JSON.stringify(edited, null, 2))}>Copy corrected JSON</button>
+                {result?.record_id != null && <button className="quiet" onClick={saveCorrections}>Save corrections</button>}
+              </div>
+              {savedNote && <div className="ok-note">{savedNote}</div>}
             </details>
           )}
           {result?.reasoning && (

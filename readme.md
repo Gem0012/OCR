@@ -106,7 +106,7 @@ With `storage: "none"` (the default) the service keeps nothing.
 | `model` | service default | Model name sent to the model server |
 | `base_url` | service default | Per-app llama-server URL |
 | `temperature` | `0` | Sampling temperature |
-| `storage` | `"none"` | `"local"` also stores each result in the service's `extractions` table |
+| `storage` | `"none"` | `"local"` keeps records in the service's SQLite; `"supabase"` writes them to the service's Supabase `ocr_extractions` table |
 | `branding` | `null` | `{ title?, subtitle?, accent? }` for UI consumers |
 | `api_key` | `null` | When set, extractions with this profile require the `X-API-Key` header |
 
@@ -121,16 +121,22 @@ are parsed per page and merged into one result.
 | `POST /api/extract` | Multipart: `file` + `profile` id, or inline `fields`/`prompt`. Optional overrides: `model`, `base_url`, `temperature`. Optional tags: `reference_id`, `owner_id` (your app's own record/user id, stored with results kept by the service). Body values beat profile values beat service defaults. |
 | `GET/POST /api/profiles` | List / register profiles |
 | `GET/PUT/DELETE /api/profiles/:id` | Read / replace / remove a profile (`devconsole` is protected). `GET` responses include the computed `effective_prompt` and never the stored `api_key`. On `PUT`, omitting `api_key` keeps the stored key. |
-| `GET /api/extractions?app_id=&reference_id=&limit=` | Rows stored by profiles with local storage, filterable by your `reference_id` |
+| `GET /api/extractions?app_id=&reference_id=&limit=&source=` | Rows stored by profiles with local or Supabase storage, filterable by your `reference_id` |
+| `GET /api/extractions/:id` | One record, including the raw extracted text (404 if missing) |
+| `PATCH /api/extractions/:id` | Save human corrections: `{"data": {...}}` (plus optional `source`) |
 | `GET /api/extractions/:id` | One record, including the raw extracted text (404 if missing) |
 | `GET /api/config` | Service defaults (URL, model, prompt, page/upload limits) |
 | `GET /api/models?base_url=` | Models offered by a model server |
 | `POST /api/ocr` | Legacy prototype endpoint (writes `ocr_records` + `people`); kept for compatibility — prefer `/api/extract` |
 
-Uploads: PNG, JPEG, WebP, or PDF (first `MAX_PDF_PAGES` pages), up to
-`MAX_UPLOAD_MB` per file. Errors: `400` bad request/file, `401` missing or
-wrong `X-API-Key`, `404` unknown profile, `409` duplicate profile id, `502`
-model-server failure.
+Uploads: PNG, JPEG, WebP, GIF, BMP, PDF, DOCX, XLSX, CSV, TXT, MD, RTF — up to
+`MAX_UPLOAD_MB` per file, first `MAX_PDF_PAGES` pages of a PDF. Digital PDFs
+(real text layer), office, and text files take a fast **text pipeline** that
+skips the vision model entirely; scanned PDFs and images go through GLM-OCR.
+Extract responses include `pipeline: "vision" | "text"` plus `stored_in` and a
+`warning` when a profile stores records. Errors: `400` bad request/file, `401`
+missing or wrong `X-API-Key`, `404` unknown profile, `409` duplicate profile
+id, `502` model-server failure.
 
 ## Developer console
 

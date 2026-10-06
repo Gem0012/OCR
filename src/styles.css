@@ -65,3 +65,10 @@
 .playground-main{flex:1;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:1px;background:var(--rule);min-height:0;border:1px solid var(--rule);border-radius:6px;overflow:hidden}
 .playground-main section{background:var(--panel);display:flex;flex-direction:column;min-height:0}
 @media(max-width:860px){.shell{flex-direction:column}.sidebar{width:100%;flex-direction:row;align-items:center;overflow:auto;padding:8px}.sidebar .brand{padding:4px 10px}.sidebar .brand span{display:none}.sidebar-foot{display:none}.field-row{grid-template-columns:1fr 90px 1fr}.playground-main{grid-template-columns:1fr}}
+/* ===== Review form ===== */
+.review-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;padding:6px 0 10px}
+.review-form .form-row{margin-bottom:0}
+.review-form .form-row.missed input{border-color:var(--alert)}
+.review-form small{display:block;font-size:10px;color:var(--ink-soft)}
+.missed-tag{font-size:10px;color:var(--alert);margin-left:6px}
+.review-actions{display:flex;gap:8px;padding:4px 0 8px}

@@ -41,6 +41,7 @@ export type SupabaseStore = {
   }) => Promise<number>;
   listExtractions: (appId: string | null, referenceId: string | null, limit: number) => Promise<SupabaseExtractionRow[]>;
   getExtraction: (id: number) => Promise<SupabaseExtractionRow | null>;
+  updateExtractionData: (id: number, data: unknown) => Promise<boolean>;
   close: () => Promise<void>;
 };
 
@@ -85,6 +86,13 @@ export function openSupabaseStore(dbUrl: string): SupabaseStore {
         FROM public.ocr_extractions WHERE id = ${id}
       `;
       return (rows[0] as unknown as SupabaseExtractionRow) ?? null;
+    },
+
+    async updateExtractionData(id, data) {
+      const rows = await sql`
+        UPDATE public.ocr_extractions SET data = ${JSON.stringify(data)}::jsonb WHERE id = ${id} RETURNING id
+      `;
+      return rows.length > 0;
     },
 
     async close() {

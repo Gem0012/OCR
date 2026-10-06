@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, type ExtractionDetail, type ExtractionRow, type Profile } from "./api";
+import { api, type ExtractionDetail, type ExtractionRow, type Profile, type ServiceConfig } from "./api";
 import { storageLabel } from "./ui";
+import ReviewForm from "./ReviewForm";
 
 function preview(data: unknown): string {
   if (data == null) return "—";
@@ -10,33 +11,62 @@ function preview(data: unknown): string {
 
 export default function RecordsPage() {
   const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [serviceConfig, setServiceConfig] = useState<ServiceConfig | null>(null);
+  const [source, setSource] = useState<"local" | "supabase">("local");
   const [profileFilter, setProfileFilter] = useState("");
   const [referenceFilter, setReferenceFilter] = useState("");
   const [limit, setLimit] = useState(50);
   const [rows, setRows] = useState<ExtractionRow[] | null>(null);
   const [detail, setDetail] = useState<ExtractionDetail | null>(null);
+  const [editedDetail, setEditedDetail] = useState<Record<string, unknown> | null>(null);
+  const [savedNote, setSavedNote] = useState("");
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    api.profiles().then(setProfiles).catch(() => undefined);
+    api.config().then(setServiceConfig).catch(() => undefined);
+  }, []);
 
   const load = useCallback(() => {
     setError("");
     api
-      .extractions({ app_id: profileFilter || undefined, reference_id: referenceFilter.trim() || undefined, limit })
+      .extractions({
+        app_id: profileFilter || undefined,
+        reference_id: referenceFilter.trim() || undefined,
+        limit,
+        source,
+      })
       .then(setRows)
       .catch((caught) => setError(caught instanceof Error ? caught.message : "Failed to load records."));
-  }, [profileFilter, referenceFilter, limit]);
+  }, [profileFilter, referenceFilter, limit, source]);
 
-  useEffect(() => {
-    api.profiles().then(setProfiles).catch(() => undefined);
-  }, []);
   useEffect(load, [load]);
 
   async function openRow(row: ExtractionRow) {
+    setSavedNote("");
     try {
-      setDetail(await api.extraction(row.id));
+      const loaded = await api.extraction(row.id, source);
+      setDetail(loaded);
+      setEditedDetail(loaded.data && typeof loaded.data === "object" && !Array.isArray(loaded.data) ? { ...loaded.data } : null);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Failed to load record.");
     }
   }
+
+  async function saveCorrections() {
+    if (!detail || !editedDetail) return;
+    try {
+      await api.updateExtraction(detail.id, editedDetail, source);
+      setSavedNote(`Corrections saved to record #${detail.id}.`);
+      setError("");
+      load();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not save corrections.");
+    }
+  }
+
+  const detailProfile = detail ? profiles.find((profile) => profile.id === detail.app_id) : undefined;
+  const correctedData = editedDetail ?? detail?.data ?? null;
 
   return (
     <div className="page">
@@ -45,6 +75,12 @@ export default function RecordsPage() {
         <span className="spacer" />
       </div>
       <div className="toolbar">
+        {serviceConfig?.supabase_configured && (
+          <select value={source} onChange={(e) => { setSource(e.target.value as "local" | "supabase"); setDetail(null); }}>
+            <option value="local">Stored in service SQLite</option>
+            <option value="supabase">Stored in Supabase</option>
+          </select>
+        )}
         <select value={profileFilter} onChange={(e) => setProfileFilter(e.target.value)}>
           <option value="">All profiles</option>
           {profiles.map((profile) => (
@@ -68,8 +104,8 @@ export default function RecordsPage() {
         <div className="muted">Loading records...</div>
       ) : rows.length === 0 ? (
         <div className="muted">
-          No records. Profiles store records here when their storage is set to Local (or Supabase, once wired);
-          the Playground always keeps its history.
+          No records{source === "supabase" ? " in Supabase" : ""}. Profiles store records here when their storage is
+          set to Local (or Supabase, once configured); the Playground always keeps its history.
         </div>
       ) : (
         <table className="data-table">
@@ -98,27 +134,33 @@ export default function RecordsPage() {
           <div className="page-head">
             <h2>Record #{detail.id} — {detail.app_id}</h2>
             <span className="spacer" />
-            <button className="quiet" onClick={() => navigator.clipboard.writeText(JSON.stringify(detail.data, null, 2))}>
+            <button className="quiet" onClick={() => navigator.clipboard.writeText(JSON.stringify(correctedData, null, 2))}>
               Copy JSON
             </button>
             <button className="quiet" onClick={() => setDetail(null)}>Close</button>
           </div>
           <div className="chips" style={{ marginBottom: 10 }}>
-            <span className="chip">{storageLabel("local")} record</span>
+            <span className="chip">{storageLabel(source === "supabase" ? "supabase" : "local")} record</span>
             {detail.reference_id && <span className="chip accent">ref: {detail.reference_id}</span>}
             <span className="chip">{detail.source_file ?? "unknown file"}</span>
             <span className="chip">{new Date(detail.created_at).toLocaleString()}</span>
           </div>
-          <FieldLabel text="Structured data" />
-          <pre className="prompt-preview">{JSON.stringify(detail.data, null, 2)}</pre>
-          <FieldLabel text="Raw extracted text" />
+          <div className="form-row" style={{ marginTop: 10 }}>Structured data</div>
+          <pre className="prompt-preview">{JSON.stringify(correctedData, null, 2)}</pre>
+          {detailProfile && detailProfile.fields.length > 0 && editedDetail && (
+            <>
+              <div className="form-row" style={{ marginTop: 12 }}>Review &amp; correct</div>
+              <ReviewForm fields={detailProfile.fields} data={editedDetail} onChange={setEditedDetail} />
+              <div className="review-actions">
+                <button className="quiet" onClick={saveCorrections}>Save corrections</button>
+              </div>
+              {savedNote && <div className="ok-note">{savedNote}</div>}
+            </>
+          )}
+          <div className="form-row" style={{ marginTop: 12 }}>Raw extracted text</div>
           <pre className="prompt-preview">{detail.extracted_text}</pre>
         </div>
       )}
     </div>
   );
-}
-
-function FieldLabel({ text }: { text: string }) {
-  return <div className="form-row" style={{ marginTop: 10 }}>{text}</div>;
 }
