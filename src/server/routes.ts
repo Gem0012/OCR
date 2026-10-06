@@ -20,7 +20,7 @@ import {
 } from "./profiles.js";
 import { getExtraction, listExtractions, saveExtraction, saveLegacyRecord } from "./storage.js";
 import { type SupabaseStore } from "./supabase.js";
-import type { Profile } from "./types.js";
+import type { FieldDef, Profile } from "./types.js";
 
 type Body = Record<string, string | undefined>;
 
@@ -46,7 +46,25 @@ export function buildApp(config: AppConfig, db: Database, supabase: SupabaseStor
       prompt: devconsole ? effectivePrompt(devconsole) : LEGACY_PROMPT,
       max_pdf_pages: config.maxPdfPages,
       max_upload_mb: config.maxUploadMb,
+      supabase_configured: Boolean(config.supabaseDbUrl),
     });
+  });
+
+  // Live preview of the prompt a profile would send, without saving it.
+  app.post("/api/prompt-preview", (request, response) => {
+    const body = request.body as { fields?: unknown; prompt?: unknown };
+    const manualPrompt = typeof body.prompt === "string" && body.prompt.trim() ? body.prompt.trim() : null;
+    const fields: FieldDef[] = Array.isArray(body.fields)
+      ? body.fields.flatMap((entry) => {
+          const record = (entry ?? {}) as Record<string, unknown>;
+          const key = typeof record.key === "string" ? record.key.trim() : "";
+          if (!key) return [];
+          const description = typeof record.description === "string" && record.description.trim() ? record.description.trim() : undefined;
+          const type = record.type === "number" || record.type === "boolean" ? record.type : undefined;
+          return [{ key, description, type } as FieldDef];
+        })
+      : [];
+    response.json({ effective_prompt: manualPrompt || buildExtractionPrompt(fields) });
   });
 
   app.get("/api/models", async (request, response) => {
