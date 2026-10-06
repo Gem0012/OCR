@@ -16,13 +16,14 @@
     "express": "^5.1.0",
     "multer": "^2.0.2",
     "pdfjs-dist": "^5.4.149",
+    "postgres": "^3.4.9",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "tsx": "^4.20.5"
   },
   "devDependencies": {
-    "@types/express": "^5.0.3",
     "@types/better-sqlite3": "^7.6.13",
+    "@types/express": "^5.0.3",
     "@types/multer": "^2.0.0",
     "@types/node": "^24.3.1",
     "@types/react": "^19.1.10",

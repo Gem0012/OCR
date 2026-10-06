@@ -1,0 +1,11 @@
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+
+# SQLite side files (ocr.db itself stays tracked)
+*.db-shm
+*.db-wal
+
+# Tool state
+.zcode/
